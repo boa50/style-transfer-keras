@@ -1,3 +1,5 @@
+# from PIL import Image
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -5,8 +7,16 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.applications import vgg19
 
-base_image_path = keras.utils.get_file('paris.jpg', 'https://i.imgur.com/F28w3Ac.jpg')
-style_reference_image_path = keras.utils.get_file('starry_night.jpg', 'https://i.imgur.com/9ooB60I.jpg')
+################## Para rodar na GPU ####################
+from tensorflow.compat.v1 import ConfigProto, Session
+
+config = ConfigProto()
+config.gpu_options.allow_growth = True
+session = Session(config=config)
+#########################################################
+
+content_image_path = keras.utils.get_file('paris.jpg', 'https://i.imgur.com/F28w3Ac.jpg')
+style_image_path = keras.utils.get_file('starry_night.jpg', 'https://i.imgur.com/9ooB60I.jpg')
 result_prefix = 'paris_generated'
 
 total_variation_weight = 1e-6
@@ -18,26 +28,16 @@ content_weight = 1e3
 # style_weight = 1e6
 # content_weight = 1
 
-width, height = keras.preprocessing.image.load_img(base_image_path).size
-img_nrows = 400
+width, height = keras.preprocessing.image.load_img(content_image_path).size
+img_nrows = 128
 img_ncols = int(width * img_nrows / height)
 
-# para rodar na GPU
-from tensorflow.compat.v1 import ConfigProto
-from tensorflow.compat.v1 import InteractiveSession
+# img_content = Image.open(content_image_path)
+# img_style = Image.open(style_image_path)
 
-config = ConfigProto()
-config.gpu_options.allow_growth = True
-session = InteractiveSession(config=config)
-
-from PIL import Image
-
-img_content = Image.open(base_image_path)
-img_style = Image.open(style_reference_image_path)
-
-plt.imshow(img_content)
+# plt.imshow(img_content)
 # plt.show()
-plt.imshow(img_style)
+# plt.imshow(img_style)
 # plt.show()
 
 def preprocess_image(image_path):
@@ -100,19 +100,19 @@ style_layer_names = [
 
 content_layer_name = "block5_conv2"
 
-def compute_loss(combination_image, base_image, style_reference_image):
+def compute_loss(combination_image, content_image, style_image):
     input_tensor = tf.concat(
-        [base_image, style_reference_image, combination_image], axis=0
+        [content_image, style_image, combination_image], axis=0
     )
     features = feature_extractor(input_tensor)
     
     loss = tf.zeros(shape=())
     
     layer_features = features[content_layer_name]
-    base_image_features = layer_features[0, :, :, :]
+    content_image_features = layer_features[0, :, :, :]
     combination_features = layer_features[2, :, :, :]
     loss = loss + content_weight * content_loss(
-        base_image_features, combination_features
+        content_image_features, combination_features
     )
     
     for layer_name in style_layer_names:
@@ -126,36 +126,46 @@ def compute_loss(combination_image, base_image, style_reference_image):
     return loss
 
 @tf.function
-def compute_loss_and_grads(combination_image, base_image, style_reference_image):
+def compute_loss_and_grads(combination_image, content_image, style_image):
     with tf.GradientTape() as tape:
-        loss = compute_loss(combination_image, base_image, style_reference_image)
+        loss = compute_loss(combination_image, content_image, style_image)
     grads = tape.gradient(loss, combination_image)
     return loss, grads
 
+def generate_image(content_path, style_path, optimizer, num_iterations=4000, show_image_iterations=500, debug=False):
+    content_image = preprocess_image(content_path)
+    style_image = preprocess_image(style_path)
+    combination_image = tf.Variable(preprocess_image(content_path))
+
+    for i in range(1, num_iterations + 1):
+        loss, grads = compute_loss_and_grads(
+            combination_image, content_image, style_image
+        )
+        
+        optimizer.apply_gradients([(grads, combination_image)])
+        
+        if i % show_image_iterations == 0:
+            print("Iteration %d: loss=%.2f" % (i, loss))
+            img = deprocess_image(combination_image.numpy())
+            if debug:
+                plt.imshow(img)
+                plt.show()
+            else:
+                fname = "app/images/generated/" + result_prefix + "_at_iteration_%d.png" % i
+                keras.preprocessing.image.save_img(fname, img)
+            
+
 # optimizer = keras.optimizers.SGD(
-#     keras.optimizers.schedules.ExponentialDecay(
-#         initial_learning_rate=100.0, decay_steps=100, decay_rate=0.96
-#     )
+    # keras.optimizers.schedules.ExponentialDecay(
+    #     initial_learning_rate=100.0, decay_steps=100, decay_rate=0.96
+    # )
 # )
-optimizer = keras.optimizers.Adam(learning_rate=10.0)
+optimizer = keras.optimizers.Adam(
+    keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=10.0, decay_steps=100, decay_rate=0.96
+    )
+)
+# optimizer = keras.optimizers.Adam(learning_rate=10.0)
 # optimizer = keras.optimizers.Adam(learning_rate=0.003)
 
-base_image = preprocess_image(base_image_path)
-style_reference_image = preprocess_image(style_reference_image_path)
-combination_image = tf.Variable(preprocess_image(base_image_path))
-
-iterations = 4000
-for i in range(1, iterations + 1):
-    loss, grads = compute_loss_and_grads(
-        combination_image, base_image, style_reference_image
-    )
-    
-    optimizer.apply_gradients([(grads, combination_image)])
-    
-    if i % 500 == 0:
-        print("Iteration %d: loss=%.2f" % (i, loss))
-        img = deprocess_image(combination_image.numpy())
-        # fname = "app/images/generated/" + result_prefix + "_at_iteration_%d.png" % i
-        # keras.preprocessing.image.save_img(fname, img)
-        plt.imshow(img)
-        plt.show()
+generate_image(content_image_path, style_image_path, optimizer, show_image_iterations=1000, debug=True)
