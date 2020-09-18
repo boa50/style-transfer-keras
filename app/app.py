@@ -1,5 +1,3 @@
-# from PIL import Image
-
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -15,23 +13,25 @@ config.gpu_options.allow_growth = True
 session = Session(config=config)
 #########################################################
 
-content_image_path = keras.utils.get_file('paris.jpg', 'https://i.imgur.com/F28w3Ac.jpg')
-style_image_path = keras.utils.get_file('starry_night.jpg', 'https://i.imgur.com/9ooB60I.jpg')
-result_prefix = 'paris_generated'
+# content_image_path = keras.utils.get_file('paris.jpg', 'https://i.imgur.com/F28w3Ac.jpg')
+# style_image_path = keras.utils.get_file('starry_night.jpg', 'https://i.imgur.com/9ooB60I.jpg')
+content_image_path = 'app/images/content/space_needle.jpg'
+style_image_path = 'app/images/style/grito.jpg'
 
-total_variation_weight = 1e-6
+total_variation_weight = 1e-4
 
 # style_weight = 1e-6
 # content_weight = 2.5e-8
-style_weight = 1e-2
-content_weight = 1e3
-# style_weight = 1e6
-# content_weight = 1
+# style_weight = 1e-2
+# content_weight = 1e3
+style_weight = 1e-5
+content_weight = 1e-6
 
 width, height = keras.preprocessing.image.load_img(content_image_path).size
 img_nrows = 128
 img_ncols = int(width * img_nrows / height)
 
+# from PIL import Image
 # img_content = Image.open(content_image_path)
 # img_style = Image.open(style_image_path)
 
@@ -100,6 +100,12 @@ style_layer_names = [
 
 content_layer_name = "block5_conv2"
 
+style_weights = {'block1_conv1': 1.,
+                 'block2_conv1': 0.75,
+                 'block3_conv1': 0.2,
+                 'block4_conv1': 0.2,
+                 'block5_conv1': 0.2}
+
 def compute_loss(combination_image, content_image, style_image):
     input_tensor = tf.concat(
         [content_image, style_image, combination_image], axis=0
@@ -119,10 +125,12 @@ def compute_loss(combination_image, content_image, style_image):
         layer_features = features[layer_name]
         style_reference_features = layer_features[1, :, :, :]
         combination_features = layer_features[2, :, :, :]
-        sl = style_loss(style_reference_features, combination_features)
+        sl = style_weights[layer_name] * style_loss(style_reference_features, combination_features)
+        # sl = style_loss(style_reference_features, combination_features)
         loss += (style_weight / len(style_layer_names)) * sl
         
     loss += total_variation_weight * total_variation_loss(combination_image)
+    # loss += total_variation_loss(combination_image)
     return loss
 
 @tf.function
@@ -151,7 +159,7 @@ def generate_image(content_path, style_path, optimizer, num_iterations=4000, sho
                 plt.imshow(img)
                 plt.show()
             else:
-                fname = "app/images/generated/" + result_prefix + "_at_iteration_%d.png" % i
+                fname = "app/images/generated/generated_at_%d.png" % i
                 keras.preprocessing.image.save_img(fname, img)
             
 
@@ -160,12 +168,12 @@ def generate_image(content_path, style_path, optimizer, num_iterations=4000, sho
     #     initial_learning_rate=100.0, decay_steps=100, decay_rate=0.96
     # )
 # )
-optimizer = keras.optimizers.Adam(
-    keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=10.0, decay_steps=100, decay_rate=0.96
-    )
-)
+# optimizer = keras.optimizers.Adam(
+#     keras.optimizers.schedules.ExponentialDecay(
+#         initial_learning_rate=10.0, decay_steps=100, decay_rate=0.96
+#     )
+# )
 # optimizer = keras.optimizers.Adam(learning_rate=10.0)
-# optimizer = keras.optimizers.Adam(learning_rate=0.003)
+optimizer = keras.optimizers.Adam(learning_rate=0.003)
 
-generate_image(content_image_path, style_image_path, optimizer, show_image_iterations=1000, debug=True)
+generate_image(content_image_path, style_image_path, optimizer, num_iterations=1000, show_image_iterations=100)
