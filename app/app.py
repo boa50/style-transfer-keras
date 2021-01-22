@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2
 
 import tensorflow as tf
 from tensorflow import keras
@@ -13,22 +14,27 @@ config.gpu_options.allow_growth = True
 session = Session(config=config)
 #########################################################
 
-# content_image_path = keras.utils.get_file('paris.jpg', 'https://i.imgur.com/F28w3Ac.jpg')
-# style_image_path = keras.utils.get_file('starry_night.jpg', 'https://i.imgur.com/9ooB60I.jpg')
-content_image_path = 'app/images/content/space_needle.jpg'
-style_image_path = 'app/images/style/grito.jpg'
+# content_image_path = 'app/images/content/space_needle.jpg'
+# style_image_path = 'app/images/style/grito.jpg'
+content_image_path = 'app/images/content/IMG_1714.jpg'
+style_image_path = 'app/images/style/patterned_leaves.jpg'
 
-total_variation_weight = 1e-4
+# total_variation_weight = 1e-4
+# total_variation_weight = 8.5e-5
+
+total_variation_weight = 8.5e-15
+content_weight = 1e-10
+style_weight = 1e-6
 
 # style_weight = 1e-6
 # content_weight = 2.5e-8
 # style_weight = 1e-2
 # content_weight = 1e3
-style_weight = 1e-5
-content_weight = 1e-6
+# style_weight = 1e6
+# content_weight = 1
 
 width, height = keras.preprocessing.image.load_img(content_image_path).size
-img_nrows = 128
+img_nrows = 256
 img_ncols = int(width * img_nrows / height)
 
 # from PIL import Image
@@ -44,17 +50,21 @@ def preprocess_image(image_path):
     img = keras.preprocessing.image.load_img(
         image_path, target_size=(img_nrows, img_ncols)
     )
+    yuv = cv2.cvtColor(np.float32(img), cv2.COLOR_RGB2YUV)
     img = keras.preprocessing.image.img_to_array(img)
     img = np.expand_dims(img, axis=0)
     img = vgg19.preprocess_input(img)
-    return tf.convert_to_tensor(img)
+    return tf.convert_to_tensor(img), yuv
 
-def deprocess_image(x):
+def deprocess_image(x, content_yuv=None):
     x = x.reshape((img_nrows, img_ncols, 3))
     x[:, :, 0] += 103.939
     x[:, :, 1] += 116.779
     x[:, :, 2] += 123.68
-    x = x[:, :, ::-1]
+    if content_yuv is not None:
+        yuv = cv2.cvtColor(np.float32(x), cv2.COLOR_RGB2YUV)
+        yuv[:,:,1:3] = content_yuv[:,:,1:3]
+        x = cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB)
     x = np.clip(x, 0, 255).astype("uint8")
     return x
 
@@ -69,6 +79,7 @@ def style_loss(style, combination):
     C = gram_matrix(combination)
     channels = 3
     size = img_nrows * img_ncols
+    # return tf.reduce_sum(tf.square(C - S)) / (size * channels)
     return tf.reduce_sum(tf.square(S - C)) / (4.0 * (channels ** 2) * (size ** 2))
 
 def content_loss(base, combination):
@@ -100,11 +111,11 @@ style_layer_names = [
 
 content_layer_name = "block5_conv2"
 
-style_weights = {'block1_conv1': 1.,
-                 'block2_conv1': 0.75,
+style_weights = {'block1_conv1': 0.5,
+                 'block2_conv1': 0.3,
                  'block3_conv1': 0.2,
                  'block4_conv1': 0.2,
-                 'block5_conv1': 0.2}
+                 'block5_conv1': 10.2}
 
 def compute_loss(combination_image, content_image, style_image):
     input_tensor = tf.concat(
@@ -126,11 +137,9 @@ def compute_loss(combination_image, content_image, style_image):
         style_reference_features = layer_features[1, :, :, :]
         combination_features = layer_features[2, :, :, :]
         sl = style_weights[layer_name] * style_loss(style_reference_features, combination_features)
-        # sl = style_loss(style_reference_features, combination_features)
-        loss += (style_weight / len(style_layer_names)) * sl
+        loss += style_weight * sl
         
     loss += total_variation_weight * total_variation_loss(combination_image)
-    # loss += total_variation_loss(combination_image)
     return loss
 
 @tf.function
@@ -141,9 +150,9 @@ def compute_loss_and_grads(combination_image, content_image, style_image):
     return loss, grads
 
 def generate_image(content_path, style_path, optimizer, num_iterations=4000, show_image_iterations=500, debug=False):
-    content_image = preprocess_image(content_path)
-    style_image = preprocess_image(style_path)
-    combination_image = tf.Variable(preprocess_image(content_path))
+    content_image, yuv = preprocess_image(content_path)
+    style_image, _ = preprocess_image(style_path)
+    combination_image = tf.Variable(content_image)
 
     for i in range(1, num_iterations + 1):
         loss, grads = compute_loss_and_grads(
@@ -154,7 +163,7 @@ def generate_image(content_path, style_path, optimizer, num_iterations=4000, sho
         
         if i % show_image_iterations == 0:
             print("Iteration %d: loss=%.2f" % (i, loss))
-            img = deprocess_image(combination_image.numpy())
+            img = deprocess_image(combination_image.numpy(), yuv)
             if debug:
                 plt.imshow(img)
                 plt.show()
@@ -164,16 +173,16 @@ def generate_image(content_path, style_path, optimizer, num_iterations=4000, sho
             
 
 # optimizer = keras.optimizers.SGD(
-    # keras.optimizers.schedules.ExponentialDecay(
-    #     initial_learning_rate=100.0, decay_steps=100, decay_rate=0.96
-    # )
-# )
-# optimizer = keras.optimizers.Adam(
 #     keras.optimizers.schedules.ExponentialDecay(
-#         initial_learning_rate=10.0, decay_steps=100, decay_rate=0.96
+#         initial_learning_rate=100.0, decay_steps=100, decay_rate=0.96
 #     )
 # )
-# optimizer = keras.optimizers.Adam(learning_rate=10.0)
-optimizer = keras.optimizers.Adam(learning_rate=0.003)
+optimizer = keras.optimizers.Adam(
+    keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=1., decay_steps=1000, decay_rate=0.96
+    )
+)
+# optimizer = keras.optimizers.Adam(learning_rate=0.1)
+# optimizer = keras.optimizers.Adam(learning_rate=0.003)
 
-generate_image(content_image_path, style_image_path, optimizer, num_iterations=1000, show_image_iterations=100)
+generate_image(content_image_path, style_image_path, optimizer, num_iterations=4000, show_image_iterations=100)
